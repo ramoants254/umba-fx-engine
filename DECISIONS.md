@@ -6,6 +6,7 @@
 - **FastAPI (async) with Uvicorn:** We chose FastAPI instead of Flask to provide native async I/O support. In a high-throughput financial system, network-bound calls (database queries, rate fetching) should not block execution threads.
 - **PostgreSQL over SQLite:** While SQLite is simpler, we chose PostgreSQL because the concurrency safety requirement (multiple parallel executions of the same quote) demands robust row-level locking (`SELECT ... FOR UPDATE`). SQLite's locking is coarse-grained (file-level lock during writes), which limits throughput and handles concurrent transactions less elegantly in a real-world scenario.
 
+
 ### Database Layer
 - **Raw SQL (asyncpg) over ORM:** We avoided ORMs like SQLAlchemy ORM or Tortoise to maintain absolute control over the SQL query structure, isolation levels, and locking semantics. ORMs add hidden overhead and can obscure transactional boundaries or deadlock risks. Raw `asyncpg` enables precise database-level transactional flow.
 
