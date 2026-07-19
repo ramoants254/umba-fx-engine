@@ -22,11 +22,14 @@ USD/EUR, USD/KES, USD/NGN, EUR/KES, EUR/NGN, EUR/USD.
 ### 2.3 Rate Resolution Order
 For a conversion `FROM → TO`:
 
-1. **Direct lookup** — `FROM/TO` exists in provider → use `sell` rate.
-2. **Inverse** — `TO/FROM` exists → use `1 / buy` rate (worst for customer
-   on the inverse side, preserves spread revenue).
+1. **Direct lookup** — `FROM/TO` exists in provider → use `buy` rate
+   (the bank's buying rate is lower, meaning the customer receives fewer destination
+   units — this is intentional; it preserves the bank's spread revenue).
+2. **Inverse** — `TO/FROM` exists → use `1 / sell` rate. The bank's sell
+   rate is higher, so inverting it yields a lower effective rate for the customer,
+   preserving the spread in the bank's favor.
 3. **Cross via USD** — resolve `FROM → USD` (step 1 or 2), then `USD → TO`
-   (step 1 or 2). Rates multiply; spreads compound.
+   (step 1 or 2). Rates multiply; spreads compound across both legs.
 4. **Cross via EUR** — same logic with EUR as intermediary.
 5. **Fail** — return `400` with `"no rate available"`.
 
@@ -38,7 +41,11 @@ Each direct pair has a `mid` rate from the upstream source.
 Default spread: **50 bps** each side (`spread_bps = 0.005`).
 
 For cross pairs, each leg applies its own spread independently.
-Effective cross rate = `sell(FROM/BRIDGE) × sell(BRIDGE/TO)`.
+Effective cross rate = `buy(FROM/BRIDGE) × buy(BRIDGE/TO)`.
+
+This means two spreads compound, which is the standard industry practice:
+each leg of the conversion charges the customer a spread, so the platform
+collects margin on both the initial conversion and the bridge leg.
 
 ---
 

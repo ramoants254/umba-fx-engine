@@ -91,9 +91,9 @@ Below is a detailed review of the baseline code in `planted_bugs/` sorted by sev
   return Decimal("1") / mid
   ```
 - **Why It Matters in Production:** Doing this completely eliminates the spread. The bank sells/buys the inverse currency at the mid-rate, meaning zero profit margin is captured for that leg of the trade.
-- **How to Fix it:** For inverse pairs, calculate the rate using the buy rate of the base pair:
+- **How to Fix it:** For inverse pairs, calculate the rate using the sell rate of the base pair to ensure the customer receives less destination currency (retaining the spread margin):
   ```python
-  return Decimal("1") / inverse["buy"]
+  return Decimal("1") / inverse["sell"]
   ```
 
 ---

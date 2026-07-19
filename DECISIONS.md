@@ -28,13 +28,23 @@
 
 ## 3. What the AI Got Wrong (and How We Caught It)
 
-During initial architectural suggestions, the AI proposed checking the idempotency key outside the database transaction, arguing it would save DB connections on duplicate calls.
+During collaboration, the AI made three critical design/logical errors that were caught and corrected:
 
-**How we caught it:** We realized this is a classic time-of-check to time-of-use (TOCTOU) bug. Under high concurrency, two rapid duplicate execute requests could check the cache simultaneously, both find a miss, and both execute. We rejected this optimization and forced the idempotency check inside the SQL transaction block.
+1. **Idempotency Key Check Placement (TOCTOU):** 
+   - *AI Suggestion:* The AI initially checked the idempotency key outside the quote locking step, claiming it optimized DB traffic.
+   - *How We Caught It:* Under high concurrency, multiple concurrent retries with the same key would all check the cache simultaneously, see a cache-miss, bypass validation, and proceed to execute. We corrected this by shifting the idempotency check to happen **inside the database lock** (immediately after `SELECT ... FOR UPDATE` on the quote). This serializes duplicate calls so that subsequent threads block first, then cleanly read the committed cached result.
+2. **Reverse/Inverse Spread Directions:**
+   - *AI Suggestion:* The AI implemented rates utilizing the `sell` rate for direct conversion (e.g. USD → KES) and `1 / buy` for inverse conversion.
+   - *How We Caught It:* Our Hypothesis test suite failed because the customer was making a profit on a round-trip USD → KES → USD. We corrected this to charge the spread against the customer in both directions: using `buy` for direct lookup (lower amount of KES) and `1 / sell` for inverse lookup (lower amount of USD).
+3. **ASGI Lifespan in Tests:**
+   - *AI Suggestion:* The AI assumed that the FastAPI startup lifespan would automatically execute during test client requests using `ASGITransport`.
+   - *How We Caught It:* Tests failed with `RuntimeError: FX engine not initialised` because `ASGITransport` does not run the application startup/lifespan events. We bypassed the ASGI lifespan hook for tests and manually instantiated and injected the database connection pool, rate provider, and engine dependencies in `conftest.py`.
 
 ---
 
 ## 4. What Was Not Trusted Without Verification
 
-- **Rate routing calculations:** We manually verified the math behind compound rates for cross-currency pairs. Spreads compound multiplicatively rather than additively, and we enforced that inverse pairs correctly use `1 / buy` to preserve the bank's spread revenue (instead of using `1 / mid` which would yield no profit margin).
-- **Concurrency tests:** We wrote a custom stress test (`test_concurrency.py`) firing 20 simultaneous execution tasks for a single quote ID to prove that the Postgres `SELECT ... FOR UPDATE` lock successfully prevents double-execution.
+- **Precision Rounding Rules:** We did not trust that intermediate calculations would maintain full decimal precision. We wrote explicit tests verifying that the engine does not perform intermediate rounding (e.g. rounding the cross-rate before multiplying by the source amount), and only quantizes at the very final step.
+- **Concurrency & Deadlock Prevention:** We manually verified the alphabetical locking order of currency balance rows. If thread A locks KES then NGN, and thread B locks NGN then KES, a deadlock occurs. Enforcing strict alphabetical sort order (`sorted([from_ccy, to_ccy])`) ensures all execution paths lock rows in the exact same sequence.
+- **Hypothesis Boundary Conditions:** We manually adjusted the property-based tests to ignore fractional sub-cent values (e.g., intermediate amounts < 1.00 unit) because rounding noise on microscopic amounts (like 0.01 KES) naturally dominates the spread.
+
