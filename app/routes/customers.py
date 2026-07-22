@@ -2,15 +2,12 @@
 from __future__ import annotations
 
 import uuid
-from decimal import Decimal
-from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 import structlog
 
-from app.database import get_pool
 from app.schemas import (
     CustomerCreate,
     CustomerResponse,
@@ -19,55 +16,38 @@ from app.schemas import (
     CreditRequest,
     CreditResponse,
 )
+from app.services.customer_service import CustomerService
 
 log = structlog.get_logger()
 router = APIRouter(prefix="/customers", tags=["customers"])
 
-SUPPORTED_CURRENCIES = ["USD", "EUR", "KES", "NGN"]
+# Service instantiation
+customer_service = CustomerService()
 
 
 @router.post("", status_code=201, response_model=CustomerResponse)
 async def create_customer(body: CustomerCreate, request: Request):
     """Create a new customer with zero balances in all currencies."""
     cid = request.state.correlation_id
-    customer_id = uuid.uuid4()
-    now = datetime.now(timezone.utc)
+    result = await customer_service.create_customer(body.name)
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            await conn.execute(
-                "INSERT INTO customers (id, name, created_at) VALUES ($1, $2, $3)",
-                customer_id,
-                body.name,
-                now,
-            )
-            # Initialise zero balances for all supported currencies
-            for ccy in SUPPORTED_CURRENCIES:
-                await conn.execute(
-                    """
-                    INSERT INTO balances (customer_id, currency, balance, updated_at)
-                    VALUES ($1, $2, 0, $3)
-                    """,
-                    customer_id,
-                    ccy,
-                    now,
-                )
+    # Bind correlation ID to logs
+    structlog.contextvars.bind_contextvars(correlation_id=cid)
 
-    log.info("customer_created", customer_id=str(customer_id), correlation_id=cid)
-    return CustomerResponse(id=customer_id, name=body.name, created_at=now)
+    return CustomerResponse(
+        id=result["id"],
+        name=result["name"],
+        created_at=result["created_at"],
+    )
 
 
 @router.get("/{customer_id}/balances", response_model=CustomerBalancesResponse)
 async def get_balances(customer_id: uuid.UUID, request: Request):
     """Return all currency balances for a customer."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        # Verify customer exists
-        customer = await conn.fetchrow(
-            "SELECT id FROM customers WHERE id = $1", customer_id
-        )
-        if customer is None:
+    try:
+        balances = await customer_service.get_balances(customer_id)
+    except ValueError as e:
+        if str(e) == "customer_not_found":
             return JSONResponse(
                 status_code=404,
                 content={
@@ -75,78 +55,42 @@ async def get_balances(customer_id: uuid.UUID, request: Request):
                     "correlation_id": request.state.correlation_id,
                 },
             )
+        raise
 
-        rows = await conn.fetch(
-            """
-            SELECT currency, balance FROM balances
-            WHERE customer_id = $1
-            ORDER BY currency
-            """,
-            customer_id,
-        )
-
-    balances = [
-        BalanceResponse(currency=row["currency"], balance=str(row["balance"]))
-        for row in rows
+    balances_resp = [
+        BalanceResponse(currency=b["currency"], balance=b["balance"])
+        for b in balances
     ]
-    return CustomerBalancesResponse(customer_id=customer_id, balances=balances)
+    return CustomerBalancesResponse(
+        customer_id=customer_id, balances=balances_resp
+    )
 
 
 @router.post("/{customer_id}/balances/credit", response_model=CreditResponse)
 async def credit_balance(
     customer_id: uuid.UUID, body: CreditRequest, request: Request
 ):
-    """Credit (add to) a customer's balance in a specific currency.
-
-    This is a test-fixture endpoint for seeding balances.
-    """
+    """Credit (add to) a customer's balance in a specific currency."""
     cid = request.state.correlation_id
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # Lock the balance row
-            row = await conn.fetchrow(
-                """
-                SELECT balance FROM balances
-                WHERE customer_id = $1 AND currency = $2
-                FOR UPDATE
-                """,
-                customer_id,
-                body.currency,
+    try:
+        result = await customer_service.credit_balance(
+            customer_id=customer_id,
+            currency=body.currency,
+            amount=body.amount,
+        )
+    except ValueError as e:
+        if str(e) == "customer_not_found":
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": "customer_not_found",
+                    "correlation_id": cid,
+                },
             )
-            if row is None:
-                return JSONResponse(
-                    status_code=404,
-                    content={
-                        "error": "customer_not_found",
-                        "correlation_id": cid,
-                    },
-                )
+        raise
 
-            now = datetime.now(timezone.utc)
-            new_balance = row["balance"] + body.amount
-            await conn.execute(
-                """
-                UPDATE balances
-                SET balance = $1, updated_at = $2
-                WHERE customer_id = $3 AND currency = $4
-                """,
-                new_balance,
-                now,
-                customer_id,
-                body.currency,
-            )
-
-    log.info(
-        "balance_credited",
-        customer_id=str(customer_id),
-        currency=body.currency,
-        amount=str(body.amount),
-        new_balance=str(new_balance),
-        correlation_id=cid,
-    )
     return CreditResponse(
-        customer_id=customer_id,
-        currency=body.currency,
-        new_balance=str(new_balance),
+        customer_id=result["customer_id"],
+        currency=result["currency"],
+        new_balance=result["new_balance"],
     )

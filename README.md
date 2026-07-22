@@ -27,12 +27,21 @@ Client
   │
   ▼
 FastAPI (async, uvicorn)
-  ├─ POST /quotes                → FXEngine.generate_quote()
-  ├─ POST /quotes/{id}/execute   → FXEngine.execute_quote()
-  ├─ GET  /customers             → customer CRUD
+  ├─ POST /quotes                → FXEngine → QuoteGenerator
+  ├─ POST /quotes/{id}/execute   → FXEngine → QuoteExecutor
+  ├─ GET  /customers             → CustomerService
   ├─ GET  /rates                 → RateProvider.snapshot()
   ├─ GET  /healthz               → DB + rate freshness check
   └─ GET  /metrics               → in-process counters
+        │
+        ▼
+   Service Layer (app/services/)
+   ├─ fx_engine.py       — coordinator facade; exposes public API
+   ├─ quote_generator.py — quote math, validation, DB persistence
+   ├─ quote_executor.py  — atomic debit + credit transaction
+   ├─ rate_router.py     — direct / inverse / cross-rate resolution
+   ├─ customer_service.py— customer profile + balance operations
+   └─ rate_provider.py   — upstream fetch, in-memory cache, spread
         │
         ▼
    PostgreSQL (asyncpg, raw SQL)
@@ -43,7 +52,7 @@ FastAPI (async, uvicorn)
    └─ idempotency_keys
 ```
 
-Rate data flows: upstream API (exchangeratesapi.io) → in-memory cache with 50 bps spread applied → engine.
+Rate data flows: upstream API (exchangeratesapi.io) → in-memory cache with 50 bps spread applied → `RateRouter` → `QuoteGenerator`.
 
 ---
 
@@ -100,7 +109,7 @@ tests/test_decimals.py .....     [ 35%]
 tests/test_idempotency.py ....   [ 48%]
 tests/test_quotes.py .........   [ 77%]
 tests/test_rates.py .......      [100%]
-31 passed in 18.16s
+31 passed in 31.35s
 ```
 
 ---
@@ -163,13 +172,15 @@ Send `Idempotency-Key: <uuid>` header on execute for safe client-side retries.
 
 This project was built pair-programming with **Antigravity (Google DeepMind)** as the primary AI coding assistant — the same class of tool as GitHub Copilot, Cursor, and Claude Code. The role is explicitly AI-native, so the goal was to demonstrate effective supervision of AI-generated code rather than avoiding it.
 
-Three concrete cases where the AI's output was caught and corrected:
+Four concrete cases where the AI's output was caught and corrected:
 
 1. **Idempotency TOCTOU:** The AI put the idempotency key check before the `SELECT ... FOR UPDATE`. Concurrent retries would both miss the cache and both execute. Fixed by moving the check inside the lock.
 
 2. **Spread direction inverted:** The AI used the `sell` rate for direct conversion (giving the customer *more* currency than intended) and `1/buy` for inverse (also in the customer's favor). The Hypothesis test suite caught this — customers were making profit on round-trips. Fixed to use `buy` for direct and `1/sell` for inverse.
 
 3. **ASGI lifespan in tests:** The AI assumed `ASGITransport` triggers FastAPI startup events. It does not. Tests failed with `FX engine not initialised`. Fixed by manually initialising and injecting dependencies in `conftest.py`.
+
+4. **Duplicate Client Lifespans in Concurrency Tests:** The AI spawned 20 separate `AsyncClient` instances concurrently in `test_concurrency.py`, which caused 20 parallel FastAPI lifespan startups/shutdowns, leading to database pool connection disposal race conditions. Fixed to share the single test-scoped client fixture.
 
 ---
 

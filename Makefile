@@ -1,5 +1,14 @@
 # Makefile for Umba FX Engine
 
+# Load environment variables from .env if it exists
+ifneq (,$(wildcard .env))
+    include .env
+    export
+endif
+
+# Fallback default password if not defined in .env
+POSTGRES_PASSWORD ?= fx_password
+
 .PHONY: help build up down restart test load-test logs status clean
 
 help:
@@ -27,7 +36,7 @@ restart:
 	docker compose restart
 
 test:
-	docker compose run --rm -e FX_TEST_DATABASE_URL=postgresql://fx_user:fx_password@postgres:5432/fx_engine_test fx-engine pytest
+	docker compose run --rm -e FX_TEST_DATABASE_URL=postgresql://fx_user:$(POSTGRES_PASSWORD)@postgres:5432/fx_engine_test fx-engine pytest
 
 load-test:
 	docker compose run --rm fx-engine locust -f scripts/load_test.py --headless -u 20 -r 2 -t 15s --host http://localhost:8000

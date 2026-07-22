@@ -29,7 +29,7 @@
 
 ## 3. What the AI Got Wrong (and How We Caught It)
 
-During collaboration, the AI made three critical design/logical errors that were caught and corrected:
+During collaboration, the AI made four critical design/logical errors that were caught and corrected:
 
 1. **Idempotency Key Check Placement (TOCTOU):** 
    - *AI Suggestion:* The AI initially checked the idempotency key outside the quote locking step, claiming it optimized DB traffic.
@@ -40,6 +40,9 @@ During collaboration, the AI made three critical design/logical errors that were
 3. **ASGI Lifespan in Tests:**
    - *AI Suggestion:* The AI assumed that the FastAPI startup lifespan would automatically execute during test client requests using `ASGITransport`.
    - *How We Caught It:* Tests failed with `RuntimeError: FX engine not initialised` because `ASGITransport` does not run the application startup/lifespan events. We bypassed the ASGI lifespan hook for tests and manually instantiated and injected the database connection pool, rate provider, and engine dependencies in `conftest.py`.
+4. **Duplicate Client Lifespans in Concurrency Tests:**
+   - *AI Suggestion:* The AI spawned 20 separate `AsyncClient` instances concurrently in `test_concurrency.py` using `asyncio.gather`.
+   - *How We Caught It:* Spawning concurrent client instances triggered 20 parallel FastAPI lifespan startups/shutdowns. When one concurrent client request finished, its shutdown ran `close_db()`, which tore down the connection pool for all other running requests, leading to database pool connection disposal race conditions and unexpected 404/database errors. Fixed to share the single test-scoped client fixture.
 
 ---
 

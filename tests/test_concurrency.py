@@ -47,12 +47,10 @@ async def test_concurrent_execute_exactly_one_succeeds(
 
     # Fire N concurrent executions
     n = 20
-    transport = ASGITransport(app=app)
 
     async def try_execute(i: int) -> dict:
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            resp = await c.post(f"/quotes/{quote_id}/execute")
-            return {"index": i, "status": resp.status_code, "body": resp.json()}
+        resp = await client.post(f"/quotes/{quote_id}/execute")
+        return {"index": i, "status": resp.status_code, "body": resp.json()}
 
     results = await asyncio.gather(*[try_execute(i) for i in range(n)])
 
@@ -104,14 +102,12 @@ async def test_concurrent_different_quotes_all_succeed(
         quote_ids.append(resp.json()["quote_id"])
 
     # Execute all concurrently
-    transport = ASGITransport(app=app)
-
     async def try_execute(qid: str) -> int:
-        async with AsyncClient(transport=transport, base_url="http://test") as c:
-            resp = await c.post(f"/quotes/{qid}/execute")
-            return resp.status_code
+        resp = await client.post(f"/quotes/{qid}/execute")
+        return resp.status_code
 
     results = await asyncio.gather(*[try_execute(qid) for qid in quote_ids])
 
     # All should succeed
     assert all(s == 200 for s in results), f"Not all succeeded: {results}"
+
